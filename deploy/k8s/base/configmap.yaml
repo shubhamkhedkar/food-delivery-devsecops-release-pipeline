@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platewise-config
+data:
+  CITY: Pune
+  RATE_LIMIT_PER_MINUTE: "120"
+  MAX_BODY_BYTES: "16384"
+  DRAIN_SECONDS: "5"
+  TRUST_PROXY: "false"
+  HSTS: "false"

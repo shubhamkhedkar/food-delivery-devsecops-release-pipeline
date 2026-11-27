@@ -1,0 +1,70 @@
+groups:
+  - name: platewise.recording
+    rules:
+      - record: platewise:http_requests:rate5m
+        expr: sum by (route, code) (rate(platewise_http_requests_total[5m]))
+      - record: platewise:http_5xx_ratio:rate5m
+        expr: |
+          sum(rate(platewise_http_requests_total{code=~"5.."}[5m]))
+            / clamp_min(sum(rate(platewise_http_requests_total[5m])), 1e-9)
+      - record: platewise:http_latency_p95:rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(platewise_http_request_duration_seconds_bucket{route=~"api_.*"}[5m])))
+      - record: platewise:orders:rate15m
+        expr: sum(rate(platewise_orders_total[15m]))
+      - record: platewise:quote_rejection_ratio:rate15m
+        expr: |
+          sum(rate(platewise_quotes_total{outcome="rejected"}[15m]))
+            / clamp_min(sum(rate(platewise_quotes_total[15m])), 1e-9)
+
+  - name: platewise.alerts
+    rules:
+      - alert: PlatewiseDown
+        expr: up{job="platewise"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Platewise target {{ $labels.instance }} is down"
+          runbook: "Check the pod/container logs and /healthz/ready."
+
+      - alert: PlatewiseHighErrorRate
+        expr: platewise:http_5xx_ratio:rate5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of Platewise requests return 5xx"
+
+      - alert: PlatewiseSlowApi
+        expr: platewise:http_latency_p95:rate5m > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Platewise API p95 latency above 300 ms"
+
+      - alert: PlatewiseOrdersStalled
+        # Traffic is arriving but nobody has managed to place an order for 30 minutes.
+        expr: platewise:orders:rate15m == 0 and on() sum(rate(platewise_http_requests_total{route="api_quote"}[15m])) > 0.05
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Quotes are being priced but no orders have been placed for 30 minutes"
+          runbook: "Check order errors (409/400 on /api/orders) and the signing-key Secret."
+
+      - alert: PlatewiseCartRejections
+        expr: platewise:quote_rejection_ratio:rate15m > 0.25
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "More than 25% of cart quotes are rejected (stale menus in clients or abuse)"
+
+      - alert: PlatewiseRateLimiting
+        expr: rate(platewise_rate_limited_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Clients are being rate-limited (429) at more than 1 req/s"

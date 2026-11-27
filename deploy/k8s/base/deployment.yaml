@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platewise
+  annotations:
+    # Releases are pinned tag@digest by scripts/release-bump.sh (the committed overlay only has
+    # the tag until the first release); with an immutable digest IfNotPresent is the right policy.
+    checkov.io/skip1: CKV_K8S_15=Digest-pinned images make IfNotPresent safe; Always adds a registry round-trip per start
+    checkov.io/skip2: CKV_K8S_43=The Jenkins release stage writes tag@digest into the production overlay at release time
+spec:
+  # No replicas field: the HPA owns the replica count (re-applying never resets it).
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platewise
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platewise
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: platewise
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: platewise
+      containers:
+        - name: platewise
+          image: platewise
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: platewise-config
+          env:
+            # Shared HMAC key so every replica can verify every order id, mounted as a file from a
+            # Secret created out of band (never committed): see README "Deploy it yourself".
+            # The volume is not optional, so pods do not start without it.
+            - name: ORDER_SIGNING_KEY_FILE
+              value: /var/run/secrets/platewise/signing-key
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: order-signing
+              mountPath: /var/run/secrets/platewise
+              readOnly: true
+      volumes:
+        - name: order-signing
+          secret:
+            secretName: platewise-order-signing
+            optional: false
+            defaultMode: 0440

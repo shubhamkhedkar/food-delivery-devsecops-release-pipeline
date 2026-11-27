@@ -1,0 +1,11 @@
+region      = "ap-south-1"
+environment = "ci"
+name        = "platewise"
+
+# Pin the controller bootstrap to a tag or commit of this repository.
+repository_url = "https://github.com/shubhamkhedkar/food-delivery-devsecops-release-pipeline.git"
+repository_ref = "main"
+
+controller_instance_type = "t3.medium"
+agent_instance_type      = "t3.large"
+sonarqube_instance_type  = "t3.large"

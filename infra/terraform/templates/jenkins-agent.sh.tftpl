@@ -1,0 +1,77 @@
+#!/bin/bash
+# Jenkins build agent bootstrap (Amazon Linux 2023): Docker plus the pinned scanner and
+# policy toolchain the Jenkinsfile calls, then the inbound agent as a systemd service.
+# For a fleet, bake this into an AMI (Packer) instead of installing on every boot.
+set -euo pipefail
+exec > >(tee -a /var/log/platewise-bootstrap.log) 2>&1
+
+dnf -y install docker git jq tar gzip unzip java-21-amazon-corretto-headless python3-pip ShellCheck || \
+  dnf -y install docker git jq tar gzip unzip java-21-amazon-corretto-headless python3-pip
+systemctl enable --now docker
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/v${versions.compose}/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+python3 -m pip install --quiet "checkov==${versions.checkov}" "ruff==${versions.ruff}" "yamllint==${versions.yamllint}"
+
+tmp="$(mktemp -d)"
+fetch_tgz() { # url binary
+  curl -fsSL "$1" -o "$tmp/pkg.tgz"
+  tar -xzf "$tmp/pkg.tgz" -C "$tmp" "$2"
+  install -m 0755 "$tmp/$2" "/usr/local/bin/$2"
+}
+fetch_tgz "https://github.com/aquasecurity/trivy/releases/download/v${versions.trivy}/trivy_${versions.trivy}_Linux-64bit.tar.gz" trivy
+fetch_tgz "https://github.com/gitleaks/gitleaks/releases/download/v${versions.gitleaks}/gitleaks_${versions.gitleaks}_linux_x64.tar.gz" gitleaks
+fetch_tgz "https://github.com/open-policy-agent/conftest/releases/download/v${versions.conftest}/conftest_${versions.conftest}_Linux_x86_64.tar.gz" conftest
+fetch_tgz "https://github.com/yannh/kubeconform/releases/download/v${versions.kubeconform}/kubeconform-linux-amd64.tar.gz" kubeconform
+fetch_tgz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${versions.kustomize}/kustomize_v${versions.kustomize}_linux_amd64.tar.gz" kustomize
+curl -fsSL "https://github.com/hadolint/hadolint/releases/download/v${versions.hadolint}/hadolint-linux-x86_64" -o /usr/local/bin/hadolint
+curl -fsSL "https://dl.k8s.io/release/v${versions.kubectl}/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl
+chmod 0755 /usr/local/bin/hadolint /usr/local/bin/kubectl
+curl -fsSL "https://releases.hashicorp.com/terraform/${versions.terraform}/terraform_${versions.terraform}_linux_amd64.zip" -o "$tmp/tf.zip"
+unzip -o -q "$tmp/tf.zip" terraform -d /usr/local/bin
+curl -fsSL "https://github.com/terraform-linters/tflint/releases/download/v${versions.tflint}/tflint_linux_amd64.zip" -o "$tmp/tflint.zip"
+unzip -o -q "$tmp/tflint.zip" tflint -d /usr/local/bin
+curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${versions.prometheus}/prometheus-${versions.prometheus}.linux-amd64.tar.gz" -o "$tmp/prom.tgz"
+tar -xzf "$tmp/prom.tgz" -C "$tmp" --strip-components=1 "prometheus-${versions.prometheus}.linux-amd64/promtool"
+install -m 0755 "$tmp/promtool" /usr/local/bin/promtool
+rm -rf "$tmp"
+
+id jenkins >/dev/null 2>&1 || useradd --create-home --shell /bin/bash jenkins
+usermod -aG docker jenkins
+install -d -o jenkins -g jenkins -m 0750 /home/jenkins/agent /opt/jenkins-agent
+
+param() {
+  aws ssm get-parameter --region "${region}" --with-decryption --name "${ssm_path}/$1" --query Parameter.Value --output text
+}
+# The agent secret appears in the Jenkins UI (Nodes > docker-agent-1) once the controller is up;
+# store it as ${ssm_path}/agent-secret and this loop picks it up.
+until param agent-secret >/dev/null 2>&1; do sleep 30; done
+umask 077
+param agent-secret >/opt/jenkins-agent/secret
+chown jenkins:jenkins /opt/jenkins-agent/secret
+until curl -fsS -o /opt/jenkins-agent/agent.jar "http://${controller_ip}:8080/jnlpJars/agent.jar"; do sleep 15; done
+
+cat >/etc/systemd/system/jenkins-agent.service <<UNIT
+[Unit]
+Description=Jenkins inbound agent (docker-agent-1)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=jenkins
+Environment=ECR_REGISTRY=${ecr_registry}
+Environment=AWS_REGION=${region}
+ExecStart=/usr/bin/java -jar /opt/jenkins-agent/agent.jar -url http://${controller_ip}:8080/ -name docker-agent-1 -secret @/opt/jenkins-agent/secret -webSocket -workDir /home/jenkins/agent
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now jenkins-agent
+echo "jenkins agent started"

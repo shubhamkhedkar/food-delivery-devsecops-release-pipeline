@@ -1,0 +1,42 @@
+#!/bin/bash
+# SonarQube Community + PostgreSQL bootstrap (Amazon Linux 2023), both as containers with
+# data on the encrypted root volume. The database password comes from SSM Parameter Store.
+set -euo pipefail
+exec > >(tee -a /var/log/platewise-bootstrap.log) 2>&1
+
+# Elasticsearch inside SonarQube needs these kernel limits.
+cat >/etc/sysctl.d/99-sonarqube.conf <<SYSCTL
+vm.max_map_count=524288
+fs.file-max=131072
+SYSCTL
+sysctl --system >/dev/null
+
+dnf -y install docker
+systemctl enable --now docker
+
+param() {
+  aws ssm get-parameter --region "${region}" --with-decryption --name "${ssm_path}/$1" --query Parameter.Value --output text
+}
+until param db-password >/dev/null 2>&1; do
+  echo "waiting for ${ssm_path}/db-password (see README)"
+  sleep 30
+done
+install -d -m 0700 /opt/sonarqube
+umask 077
+DB_PASSWORD="$(param db-password)"
+printf 'POSTGRES_USER=sonar\nPOSTGRES_DB=sonar\nPOSTGRES_PASSWORD=%s\n' "$DB_PASSWORD" >/opt/sonarqube/db.env
+printf 'SONAR_JDBC_URL=jdbc:postgresql://sonar-db:5432/sonar\nSONAR_JDBC_USERNAME=sonar\nSONAR_JDBC_PASSWORD=%s\n' "$DB_PASSWORD" >/opt/sonarqube/app.env
+
+docker network inspect sonar >/dev/null 2>&1 || docker network create sonar >/dev/null
+for v in sonar_db sonar_data sonar_extensions sonar_logs; do docker volume create "$v" >/dev/null; done
+docker rm -f sonar-db sonarqube >/dev/null 2>&1 || true
+docker run -d --name sonar-db --restart unless-stopped --network sonar \
+  --security-opt no-new-privileges:true --env-file /opt/sonarqube/db.env \
+  -v sonar_db:/var/lib/postgresql/data "${postgres_image}"
+docker run -d --name sonarqube --restart unless-stopped --network sonar \
+  --security-opt no-new-privileges:true --env-file /opt/sonarqube/app.env \
+  --ulimit nofile=131072:131072 --ulimit nproc=8192:8192 \
+  -p "${sonarqube_ip}:9000:9000" -p 127.0.0.1:9000:9000 \
+  -v sonar_data:/opt/sonarqube/data -v sonar_extensions:/opt/sonarqube/extensions -v sonar_logs:/opt/sonarqube/logs \
+  "${sonarqube_image}"
+echo "sonarqube started"

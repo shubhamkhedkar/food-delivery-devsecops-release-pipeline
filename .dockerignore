@@ -1,0 +1,9 @@
+**
+!app/package.json
+!app/package-lock.json
+!app/index.html
+!app/vite.config.js
+!app/eslint.config.js
+!app/public/**
+!app/src/**
+!app/test/**

@@ -1,0 +1,49 @@
+#!/bin/bash
+# Jenkins controller bootstrap (Amazon Linux 2023). Builds the configuration-as-code image from
+# ci/jenkins in this repository and runs it with secrets read from SSM Parameter Store.
+set -euo pipefail
+exec > >(tee -a /var/log/platewise-bootstrap.log) 2>&1
+
+dnf -y install docker git jq
+systemctl enable --now docker
+
+param() {
+  aws ssm get-parameter --region "${region}" --with-decryption --name "${ssm_path}/$1" --query Parameter.Value --output text
+}
+# sonar-token is stored last (it needs SonarQube up first), so its presence means "all set".
+until param admin-password >/dev/null 2>&1 && param sonar-token >/dev/null 2>&1; do
+  echo "waiting for SecureString parameters under ${ssm_path}/ (see README)"
+  sleep 30
+done
+
+install -d -m 0700 /opt/jenkins /opt/jenkins/secrets
+rm -rf /opt/jenkins/src
+git clone --depth 1 --branch "${repository_ref}" "${repository_url}" /opt/jenkins/src
+docker build --pull -t platewise-jenkins:local /opt/jenkins/src/ci/jenkins
+
+umask 077
+{
+  echo "JENKINS_ADMIN_PASSWORD=$(param admin-password)"
+  echo "RELEASE_APPROVER_PASSWORD=$(param release-approver-password)"
+  echo "JENKINS_URL=http://localhost:8080/"
+  echo "JENKINS_ADMIN_EMAIL=$(param admin-email)"
+  echo "SONAR_HOST_URL=${sonar_url}"
+  echo "SONAR_TOKEN=$(param sonar-token)"
+  echo "NVD_API_KEY=$(param nvd-api-key)"
+  echo "GITHUB_PUSH_USER=$(param github-push-user)"
+  echo "GITHUB_PUSH_TOKEN=$(param github-push-token)"
+} >/opt/jenkins/secrets/env
+param kubeconfig >/opt/jenkins/secrets/kubeconfig
+chown 1000:1000 /opt/jenkins/secrets/kubeconfig
+chmod 0400 /opt/jenkins/secrets/kubeconfig
+
+docker volume create jenkins_home >/dev/null
+docker rm -f jenkins >/dev/null 2>&1 || true
+docker run -d --name jenkins --restart unless-stopped \
+  --security-opt no-new-privileges:true --cap-drop ALL \
+  -p "${controller_ip}:8080:8080" -p 127.0.0.1:8080:8080 \
+  --env-file /opt/jenkins/secrets/env \
+  -v jenkins_home:/var/jenkins_home \
+  -v /opt/jenkins/secrets/kubeconfig:/run/secrets/kubeconfig:ro \
+  platewise-jenkins:local
+echo "jenkins controller started"

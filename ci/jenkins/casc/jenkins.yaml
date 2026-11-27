@@ -1,0 +1,109 @@
+# Jenkins configuration-as-code for the Platewise release pipeline. Every secret is resolved
+# from the environment or a mounted secrets file at boot (${...}); none are stored here.
+jenkins:
+  systemMessage: "Platewise CI: managed by configuration-as-code, UI changes are overwritten."
+  numExecutors: 0
+  mode: EXCLUSIVE
+  disableRememberMe: true
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: "${JENKINS_ADMIN_PASSWORD}"
+        - id: release-approver
+          password: "${RELEASE_APPROVER_PASSWORD}"
+  authorizationStrategy:
+    globalMatrix:
+      entries:
+        - user:
+            name: admin
+            permissions: ["Overall/Administer"]
+        - user:
+            name: release-approver
+            permissions: ["Overall/Read", "Job/Read", "Job/Build"]
+        - group:
+            name: authenticated
+            permissions: ["Overall/Read", "Job/Read"]
+  crumbIssuer: standard
+  remotingSecurity:
+    enabled: true
+  nodes:
+    # The EC2 build agent from infra/terraform connects over WebSocket (no inbound port 50000).
+    - permanent:
+        name: docker-agent-1
+        labelString: docker
+        remoteFS: /home/jenkins/agent
+        numExecutors: 2
+        launcher:
+          inbound:
+            webSocket: true
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: sonar-token
+              description: SonarQube analysis token
+              secret: "${SONAR_TOKEN}"
+          - string:
+              scope: GLOBAL
+              id: nvd-api-key
+              description: NVD API key for OWASP Dependency-Check
+              secret: "${NVD_API_KEY}"
+          - usernamePassword:
+              scope: GLOBAL
+              id: github-push
+              description: Fine-grained token that may push the release-bump commit
+              username: "${GITHUB_PUSH_USER}"
+              password: "${GITHUB_PUSH_TOKEN}"
+          - file:
+              scope: GLOBAL
+              id: platewise-kubeconfig
+              description: Namespace-scoped kubeconfig for the Deploy stage
+              fileName: kubeconfig
+              secretBytes: "${readFileBase64:/run/secrets/kubeconfig}"
+
+tool:
+  git:
+    installations:
+      - name: Default
+        home: git
+  nodejs:
+    installations:
+      - name: node24
+        properties:
+          - installSource:
+              installers:
+                - nodeJSInstaller:
+                    id: "24.11.1"
+                    npmPackagesRefreshHours: 72
+  sonarRunnerInstallation:
+    installations:
+      - name: sonar-scanner
+        properties:
+          - installSource:
+              installers:
+                - sonarRunnerInstaller:
+                    id: "7.2.0.5079"
+  dependency-check:
+    installations:
+      - name: dependency-check
+        properties:
+          - installSource:
+              installers:
+                - dependencyCheckInstaller:
+                    id: "12.1.0"
+
+unclassified:
+  location:
+    url: "${JENKINS_URL}"
+    adminAddress: "${JENKINS_ADMIN_EMAIL}"
+  sonarGlobalConfiguration:
+    buildWrapperEnabled: true
+    installations:
+      - name: sonarqube
+        serverUrl: "${SONAR_HOST_URL}"
+        credentialsId: sonar-token

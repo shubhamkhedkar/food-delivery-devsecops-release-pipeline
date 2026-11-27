@@ -1,0 +1,28 @@
+# Production overlay. The Jenkins "Release manifest" stage rewrites images[0].newTag/digest
+# here (scripts/release-bump.sh); nothing else should edit it by hand.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: platewise
+resources:
+  - ../../base
+  - ingress.yaml
+components:
+  - ../../components/monitoring
+images:
+  - name: platewise
+    newName: registry.example.com/food/platewise
+    newTag: 1.0.0
+configMapGenerator:
+  - name: platewise-config
+    behavior: merge
+    literals:
+      - TRUST_PROXY=true
+      - HSTS=true
+patches:
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: platewise
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3

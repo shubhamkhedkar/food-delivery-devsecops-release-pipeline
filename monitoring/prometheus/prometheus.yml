@@ -1,0 +1,22 @@
+# Prometheus for the local stack (compose.yaml). In Kubernetes the same rules ship as a
+# PrometheusRule (deploy/k8s/components/monitoring) and the app is scraped via a ServiceMonitor.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: platewise
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: platewise
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["platewise:8080"]
+        labels:
+          env: local

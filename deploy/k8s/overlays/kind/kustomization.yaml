@@ -1,0 +1,21 @@
+# Local rehearsal on kind: the locally built image is side-loaded (never pulled) and a
+# NetworkPolicy admits the smoke-test client namespace. scripts/kind-smoke.sh creates the
+# signing-key Secret with a random value before applying this overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: platewise
+resources:
+  - ../../base
+  - networkpolicy-allow-smoke-client.yaml
+images:
+  - name: platewise
+    newName: platewise
+    newTag: local
+patches:
+  - target:
+      kind: Deployment
+      name: platewise
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never

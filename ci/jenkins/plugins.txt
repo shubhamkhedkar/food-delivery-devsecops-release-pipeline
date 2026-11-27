@@ -1,0 +1,14 @@
+configuration-as-code
+workflow-aggregator
+pipeline-model-definition
+pipeline-stage-view
+git
+credentials-binding
+matrix-auth
+timestamper
+ws-cleanup
+junit
+coverage
+nodejs
+sonar
+dependency-check-jenkins-plugin

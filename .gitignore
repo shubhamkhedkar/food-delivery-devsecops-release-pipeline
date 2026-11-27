@@ -1,0 +1,11 @@
+node_modules/
+app/dist/
+app/coverage/
+app/reports/
+rendered/
+reports/
+.env
+*.tfstate*
+.terraform/
+.terraform.lock.hcl.bak
+*.tfplan

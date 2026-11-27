@@ -1,0 +1,111 @@
+rule_files:
+  - ../rules/platewise.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: target down fires after 2m
+    interval: 1m
+    input_series:
+      - series: 'up{job="platewise", instance="platewise:8080"}'
+        values: "1 0 0 0"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PlatewiseDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: PlatewiseDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: platewise, instance: "platewise:8080"}
+            exp_annotations:
+              summary: "Platewise target platewise:8080 is down"
+              runbook: "Check the pod/container logs and /healthz/ready."
+
+  - name: 10% server errors for 15m fires the error-rate alert
+    interval: 1m
+    input_series:
+      - series: 'platewise_http_requests_total{route="api_quote", method="POST", code="200"}'
+        values: "0+90x20"
+      - series: 'platewise_http_requests_total{route="api_quote", method="POST", code="500"}'
+        values: "0+10x20"
+    promql_expr_test:
+      - expr: platewise:http_5xx_ratio:rate5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'platewise:http_5xx_ratio:rate5m'
+            value: 0.1
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PlatewiseHighErrorRate
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: PlatewiseHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "More than 5% of Platewise requests return 5xx"
+
+  - name: quotes without orders for 30m fires the stalled-orders alert
+    interval: 1m
+    input_series:
+      - series: 'platewise_http_requests_total{route="api_quote", method="POST", code="200"}'
+        values: "0+12x60"
+      - series: 'platewise_orders_total{restaurant="misal-mandal"}'
+        values: "5x60"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PlatewiseOrdersStalled
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: PlatewiseOrdersStalled
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Quotes are being priced but no orders have been placed for 30 minutes"
+              runbook: "Check order errors (409/400 on /api/orders) and the signing-key Secret."
+
+  - name: healthy ordering does not alert
+    interval: 1m
+    input_series:
+      - series: 'platewise_http_requests_total{route="api_quote", method="POST", code="200"}'
+        values: "0+12x60"
+      - series: 'platewise_orders_total{restaurant="misal-mandal"}'
+        values: "0+3x60"
+      - series: 'platewise_quotes_total{outcome="priced"}'
+        values: "0+12x60"
+      - series: 'platewise_quotes_total{outcome="rejected"}'
+        values: "0+1x60"
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: PlatewiseOrdersStalled
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: PlatewiseCartRejections
+        exp_alerts: []
+
+  - name: a quarter of carts rejected for 15m raises an info alert
+    interval: 1m
+    input_series:
+      - series: 'platewise_quotes_total{outcome="priced"}'
+        values: "0+6x60"
+      - series: 'platewise_quotes_total{outcome="rejected"}'
+        values: "0+4x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: PlatewiseCartRejections
+        exp_alerts:
+          - exp_labels: {severity: info}
+            exp_annotations:
+              summary: "More than 25% of cart quotes are rejected (stale menus in clients or abuse)"
+
+  - name: sustained 429s raise an info alert
+    interval: 1m
+    input_series:
+      - series: 'platewise_rate_limited_total'
+        values: "0+120x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PlatewiseRateLimiting
+        exp_alerts:
+          - exp_labels: {severity: info}
+            exp_annotations:
+              summary: "Clients are being rate-limited (429) at more than 1 req/s"

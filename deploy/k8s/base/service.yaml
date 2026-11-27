@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: platewise
+  labels:
+    app.kubernetes.io/name: platewise
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: platewise
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
